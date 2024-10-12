@@ -1,0 +1,22 @@
+{
+  "name": "Vulkan Dev Environment",
+  "context": "..",
+  "dockerFile": "../Dockerfile",
+  "runArgs": [
+    "--device", "/dev/dri",  // This ensures GPU access for Vulkan.
+    "-v", "${localWorkspaceFolder}:/workspace"  // Bind mount your project folder to /workspace
+  ],
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/bash"
+      },
+
+      "extensions": [
+        "ms-vscode.cpptools",  // C++ Tools extension
+        "ms-vscode.cmake-tools" // CMake Tools (optional, but useful)
+      ]
+    }
+  }
+}

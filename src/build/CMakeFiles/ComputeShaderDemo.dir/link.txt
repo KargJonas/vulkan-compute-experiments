@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/ComputeShaderDemo.dir/main.cpp.o -o ComputeShaderDemo  /usr/lib/x86_64-linux-gnu/libvulkan.so 

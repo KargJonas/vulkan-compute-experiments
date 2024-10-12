@@ -1,3 +1,0 @@
-/workspace/src/build/CMakeFiles/ComputeShaderDemo.dir
-/workspace/src/build/CMakeFiles/edit_cache.dir
-/workspace/src/build/CMakeFiles/rebuild_cache.dir

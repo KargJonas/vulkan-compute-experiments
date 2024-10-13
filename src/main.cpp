@@ -226,7 +226,7 @@ int main() {
     // Shader module
     VkShaderModule computeShaderModule;
     {
-        auto shaderCode = readFile("add.comp.spv");
+        auto shaderCode = readFile("shaders/add.spv");
 
         VkShaderModuleCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;

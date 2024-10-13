@@ -5,10 +5,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Update and install necessary packages
 RUN apt-get update && apt-get install -y \
-    # Build utilities
+    # Build/dev utilities
     pkg-config \
     software-properties-common \
     build-essential \
+    cmake \
+    git \
     # Debugging utilities
     lshw \
     mesa-utils \
@@ -22,8 +24,6 @@ RUN apt-get update && apt-get install -y \
     libglm-dev \
     glslang-tools \
     libglew-dev \
-    # Toolchain
-    cmake \
     # Cleanup
     && apt-get clean
 

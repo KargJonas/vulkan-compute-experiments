@@ -7,6 +7,10 @@
 #include <cstdlib>
 #include <math.h>
 
+struct ExtendedVkDescriptorBufferInfo : public VkDescriptorBufferInfo {
+    uint32_t binding;
+};
+
 // Function to read the SPIR-V shader code from a file
 std::vector<char> readFile(const std::string& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -33,7 +37,7 @@ void copyBufferToDevice(VkDevice destDevice, VkDeviceMemory destDeviceMemory, vo
 }
 
 // Creates a buffer on a physical device, allocates memory and binds the buffer
-void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDeviceMemory* deviceMemory, std::vector<VkDescriptorBufferInfo>* bufferDescriptors, VkBuffer* buffer, VkDeviceSize size) {
+void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDeviceMemory* deviceMemory, std::vector<ExtendedVkDescriptorBufferInfo>* bufferDescriptors, VkBuffer* buffer, VkDeviceSize size, uint32_t binding) {
     
     // This struct is used to hold the information required for buffer creation
     VkBufferCreateInfo bufferInfo{};
@@ -79,10 +83,11 @@ void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDev
     vkAllocateMemory(logicalDevice, &allocInfo, nullptr, deviceMemory);
     vkBindBufferMemory(logicalDevice, *buffer, *deviceMemory, 0);
 
-    VkDescriptorBufferInfo bufferDescriptorInfo{};
+    ExtendedVkDescriptorBufferInfo bufferDescriptorInfo{};
     bufferDescriptorInfo.buffer = *buffer;
     bufferDescriptorInfo.offset = 0;
     bufferDescriptorInfo.range = size;
+    bufferDescriptorInfo.binding = binding;
     bufferDescriptors->push_back(bufferDescriptorInfo);
 }
 
@@ -200,71 +205,11 @@ int main() {
     // Create buffers
     VkBuffer bufferA, bufferB, bufferResult;
     VkDeviceMemory bufferMemoryA, bufferMemoryB, bufferMemoryResult;
-    std::vector<VkDescriptorBufferInfo> bufferDescriptors;
+    std::vector<ExtendedVkDescriptorBufferInfo> bufferDescriptors;
     {
-        createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize);
-        createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize);
-        createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize);
-
-        // // we can reuse the bufferinfo for all three buffers because they have the same size.
-        // VkBufferCreateInfo bufferInfo{};
-        // bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        // bufferInfo.size = bufferSize;
-        // bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        
-        // // according to chatgpt, vk does not retain any references to the VkBufferCreateInfo
-        // // struct after buffer creation, so in the case that the buffers are not of the same
-        // // size, we could reuse the same bufferInfo struct and just change the value of the
-        // // size fields in between the vkCreateBuffer calls.
-
-        // // the third param is a VkAllocationCallbacks* struct and allows you to control
-        // // the way memory allocation is done. mem alloc is off the critical path, thus
-        // // using non-default mem alloc is usually not used for perf reason, but more for
-        // // debugging.
-        // // Buffer A
-        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferA);
-        // // Buffer B
-        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferB);
-        // // Result Buffer
-        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferResult);
-        
-        // // Memory allocation
-        // // holds device specific mem requirement info like size, alignment and memory type
-        // VkMemoryRequirements memRequirements;
-        // vkGetBufferMemoryRequirements(device, bufferA, &memRequirements);
-        
-        // VkMemoryAllocateInfo allocInfo{};
-        // allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        // allocInfo.allocationSize = memRequirements.size * 3; // For three buffers
-        
-        // // Find memory type
-        // VkPhysicalDeviceMemoryProperties memProperties;
-        // vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-        
-        // uint32_t memoryTypeIndex = 0;
-        // bool found = false;
-        // for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        //     if ((memRequirements.memoryTypeBits & (1 << i)) &&
-        //         (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-        //         (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-        //         memoryTypeIndex = i;
-        //         found = true;
-        //         break;
-        //     }
-        // }
-        // if (!found) {
-        //     throw std::runtime_error("Failed to find suitable memory type!");
-        // }
-        // allocInfo.memoryTypeIndex = memoryTypeIndex;
-        
-        // // Allocate memory for buffers
-        // vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemoryA);
-
-        // // createBuffer(physicalDevice, device, bufferMemoryA, bufferA, bufferSize);
-
-        // vkBindBufferMemory(device, bufferA, bufferMemoryA, 0);
-        // vkBindBufferMemory(device, bufferB, bufferMemoryA, memRequirements.size);
-        // vkBindBufferMemory(device, bufferResult, bufferMemoryA, memRequirements.size * 2);
+        createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize, 0);
+        createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize, 1);
+        createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize, 2);
     }
 
     // Map and copy data to buffers
@@ -276,10 +221,12 @@ int main() {
     // Descriptor set layout
     VkDescriptorSetLayout descriptorSetLayout;
     {
-        VkDescriptorSetLayoutBinding bindings[3]{};
+        size_t descriptorCount = bufferDescriptors.size();
 
-        for (int i = 0; i < 3; i++) {
-            bindings[i].binding = i;
+        VkDescriptorSetLayoutBinding bindings[descriptorCount]{};
+
+        for (int i = 0; i < descriptorCount; i++) {
+            bindings[i].binding = bufferDescriptors[i].binding;
             bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -287,7 +234,7 @@ int main() {
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 3;
+        layoutInfo.bindingCount = descriptorCount;
         layoutInfo.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
@@ -370,10 +317,10 @@ int main() {
         }
 
         VkWriteDescriptorSet descriptorWrites[descriptorCount]{};
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < descriptorCount; i++) {
             descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[i].dstSet = descriptorSet;
-            descriptorWrites[i].dstBinding = i;   // todo: we should be able to define the binding of the buffer in createBuffer()
+            descriptorWrites[i].dstBinding = bufferDescriptors[i].binding;
             descriptorWrites[i].dstArrayElement = 0;
             descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             descriptorWrites[i].descriptorCount = 1;
@@ -439,18 +386,9 @@ int main() {
         vkDestroyFence(device, fence, nullptr);
     }
 
-
-    // TODO:   CODE WORKS UP UNTIL THIS POINT
-
-
     // Read back the result
     std::vector<float> resultData(dataSize);
     {
-        // void* data;
-        // vkMapMemory(device, bufferMemoryA, bufferSize * 2, bufferSize, 0, &data);
-        // memcpy(resultData.data(), data, bufferSize);
-        // vkUnmapMemory(device, bufferMemoryA);
-
         void* data;
         vkMapMemory(device, bufferMemoryResult, 0, bufferSize, 0, &data);
         memcpy(resultData.data(), data, bufferSize);   // segfault happens here.

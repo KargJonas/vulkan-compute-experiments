@@ -25,6 +25,67 @@ std::vector<char> readFile(const std::string& filename) {
     return buffer;
 }
 
+void copyBufferToDevice(VkDevice destDevice, VkDeviceMemory destDeviceMemory, void* srcBuffer, VkDeviceSize offset, VkDeviceSize bufferSize) {
+    void* data;
+    vkMapMemory(destDevice, destDeviceMemory, offset, bufferSize, 0, &data);
+    memcpy(data, srcBuffer, bufferSize);
+    vkUnmapMemory(destDevice, destDeviceMemory);
+}
+
+// Creates a buffer on a physical device, allocates memory and binds the buffer
+void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDeviceMemory* deviceMemory, std::vector<VkDescriptorBufferInfo>* bufferDescriptors, VkBuffer* buffer, VkDeviceSize size) {
+    
+    // This struct is used to hold the information required for buffer creation
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    // Third param can be used for controlling allocation
+    // Could be used for debugging purposes
+    vkCreateBuffer(logicalDevice, &bufferInfo, nullptr, buffer);
+
+    // Get device specific memory requirements info like size, alignment and memory type
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(logicalDevice, *buffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    
+    // Describes a number of memory heaps and memory types of the physical device that can be accessed
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    // Searches through the availably memory types provided by the physical device
+    // to find one that satisfies both the buffer's memory requirements and the desired
+    // properties for CPU access.
+    uint32_t memoryTypeIndex = 0;
+    bool found = false;
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memoryTypeIndex = i;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) throw std::runtime_error("Failed to find suitable memory type!");
+    allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+    // Allocate and bind
+    vkAllocateMemory(logicalDevice, &allocInfo, nullptr, deviceMemory);
+    vkBindBufferMemory(logicalDevice, *buffer, *deviceMemory, 0);
+
+    VkDescriptorBufferInfo bufferDescriptorInfo{};
+    bufferDescriptorInfo.buffer = *buffer;
+    bufferDescriptorInfo.offset = 0;
+    bufferDescriptorInfo.range = size;
+    bufferDescriptors->push_back(bufferDescriptorInfo);
+}
+
 int main() {
     // number of elements in array
     const int dataSize = 1024;
@@ -57,7 +118,7 @@ int main() {
     }
 
     // Physical device selection
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;  // global
     {
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -85,7 +146,7 @@ int main() {
     }
 
     // Logical device and queue creation
-    VkDevice device;
+    VkDevice device;   // global
     VkQueue computeQueue;
     uint32_t queueFamilyIndex;
     {
@@ -139,75 +200,77 @@ int main() {
     // Create buffers
     VkBuffer bufferA, bufferB, bufferResult;
     VkDeviceMemory bufferMemoryA, bufferMemoryB, bufferMemoryResult;
+    std::vector<VkDescriptorBufferInfo> bufferDescriptors;
     {
-        // we can reuse the bufferinfo for all three buffers because they have the same size.
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        
-        // according to chatgpt, vk does not retain any references to the VkBufferCreateInfo
-        // struct after buffer creation, so in the case that the buffers are not of the same
-        // size, we could reuse the same bufferInfo struct and just change the value of the
-        // size fields in between the vkCreateBuffer calls.
+        createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize);
+        createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize);
+        createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize);
 
-        // the third param is a VkAllocationCallbacks* struct and allows you to control
-        // the way memory allocation is done. mem alloc is off the critical path, thus
-        // using non-default mem alloc is usually not used for perf reason, but more for
-        // debugging.
-        // Buffer A
-        vkCreateBuffer(device, &bufferInfo, nullptr, &bufferA);
-        // Buffer B
-        vkCreateBuffer(device, &bufferInfo, nullptr, &bufferB);
-        // Result Buffer
-        vkCreateBuffer(device, &bufferInfo, nullptr, &bufferResult);
+        // // we can reuse the bufferinfo for all three buffers because they have the same size.
+        // VkBufferCreateInfo bufferInfo{};
+        // bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        // bufferInfo.size = bufferSize;
+        // bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         
-        // Memory allocation
-        // holds device specific mem requirement info like size, alignment and memory type
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(device, bufferA, &memRequirements);
+        // // according to chatgpt, vk does not retain any references to the VkBufferCreateInfo
+        // // struct after buffer creation, so in the case that the buffers are not of the same
+        // // size, we could reuse the same bufferInfo struct and just change the value of the
+        // // size fields in between the vkCreateBuffer calls.
+
+        // // the third param is a VkAllocationCallbacks* struct and allows you to control
+        // // the way memory allocation is done. mem alloc is off the critical path, thus
+        // // using non-default mem alloc is usually not used for perf reason, but more for
+        // // debugging.
+        // // Buffer A
+        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferA);
+        // // Buffer B
+        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferB);
+        // // Result Buffer
+        // vkCreateBuffer(device, &bufferInfo, nullptr, &bufferResult);
         
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.allocationSize = memRequirements.size * 3; // For three buffers
+        // // Memory allocation
+        // // holds device specific mem requirement info like size, alignment and memory type
+        // VkMemoryRequirements memRequirements;
+        // vkGetBufferMemoryRequirements(device, bufferA, &memRequirements);
         
-        // Find memory type
-        VkPhysicalDeviceMemoryProperties memProperties;
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+        // VkMemoryAllocateInfo allocInfo{};
+        // allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        // allocInfo.allocationSize = memRequirements.size * 3; // For three buffers
         
-        uint32_t memoryTypeIndex = 0;
-        bool found = false;
-        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-            if ((memRequirements.memoryTypeBits & (1 << i)) &&
-                (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-                (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                memoryTypeIndex = i;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            throw std::runtime_error("Failed to find suitable memory type!");
-        }
-        allocInfo.memoryTypeIndex = memoryTypeIndex;
+        // // Find memory type
+        // VkPhysicalDeviceMemoryProperties memProperties;
+        // vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
         
-        // Allocate memory for buffers
-        vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemoryA);
-        vkBindBufferMemory(device, bufferA, bufferMemoryA, 0);
-        vkBindBufferMemory(device, bufferB, bufferMemoryA, memRequirements.size);
-        vkBindBufferMemory(device, bufferResult, bufferMemoryA, memRequirements.size * 2);
+        // uint32_t memoryTypeIndex = 0;
+        // bool found = false;
+        // for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        //     if ((memRequirements.memoryTypeBits & (1 << i)) &&
+        //         (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+        //         (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        //         memoryTypeIndex = i;
+        //         found = true;
+        //         break;
+        //     }
+        // }
+        // if (!found) {
+        //     throw std::runtime_error("Failed to find suitable memory type!");
+        // }
+        // allocInfo.memoryTypeIndex = memoryTypeIndex;
+        
+        // // Allocate memory for buffers
+        // vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemoryA);
+
+        // // createBuffer(physicalDevice, device, bufferMemoryA, bufferA, bufferSize);
+
+        // vkBindBufferMemory(device, bufferA, bufferMemoryA, 0);
+        // vkBindBufferMemory(device, bufferB, bufferMemoryA, memRequirements.size);
+        // vkBindBufferMemory(device, bufferResult, bufferMemoryA, memRequirements.size * 2);
     }
 
     // Map and copy data to buffers
     {
-        void* data;
-        vkMapMemory(device, bufferMemoryA, 0, bufferSize, 0, &data);
-        memcpy(data, dataA.data(), bufferSize);
-        vkUnmapMemory(device, bufferMemoryA);
-
-        vkMapMemory(device, bufferMemoryA, bufferSize, bufferSize, 0, &data);
-        memcpy(data, dataB.data(), bufferSize);
-        vkUnmapMemory(device, bufferMemoryA);
+        copyBufferToDevice(device, bufferMemoryA, dataA.data(), 0, bufferSize);
+        copyBufferToDevice(device, bufferMemoryB, dataB.data(), 0, bufferSize);
     }
 
     // Descriptor set layout
@@ -280,9 +343,11 @@ int main() {
     VkDescriptorPool descriptorPool;
     VkDescriptorSet descriptorSet;
     {
+        size_t descriptorCount = bufferDescriptors.size();
+
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 3;
+        poolSize.descriptorCount = descriptorCount;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -304,31 +369,18 @@ int main() {
             throw std::runtime_error("Failed to allocate descriptor set!");
         }
 
-        VkDescriptorBufferInfo bufferInfos[3]{};
-        bufferInfos[0].buffer = bufferA;
-        bufferInfos[0].offset = 0;
-        bufferInfos[0].range = bufferSize;
-
-        bufferInfos[1].buffer = bufferB;
-        bufferInfos[1].offset = 0;
-        bufferInfos[1].range = bufferSize;
-
-        bufferInfos[2].buffer = bufferResult;
-        bufferInfos[2].offset = 0;
-        bufferInfos[2].range = bufferSize;
-
-        VkWriteDescriptorSet descriptorWrites[3]{};
+        VkWriteDescriptorSet descriptorWrites[descriptorCount]{};
         for (int i = 0; i < 3; i++) {
             descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[i].dstSet = descriptorSet;
-            descriptorWrites[i].dstBinding = i;
+            descriptorWrites[i].dstBinding = i;   // todo: we should be able to define the binding of the buffer in createBuffer()
             descriptorWrites[i].dstArrayElement = 0;
             descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             descriptorWrites[i].descriptorCount = 1;
-            descriptorWrites[i].pBufferInfo = &bufferInfos[i];
+            descriptorWrites[i].pBufferInfo = &bufferDescriptors[i];
         }
 
-        vkUpdateDescriptorSets(device, 3, descriptorWrites, 0, nullptr);
+        vkUpdateDescriptorSets(device, descriptorCount, descriptorWrites, 0, nullptr);
     }
 
     // Command buffer
@@ -387,13 +439,22 @@ int main() {
         vkDestroyFence(device, fence, nullptr);
     }
 
+
+    // TODO:   CODE WORKS UP UNTIL THIS POINT
+
+
     // Read back the result
     std::vector<float> resultData(dataSize);
     {
+        // void* data;
+        // vkMapMemory(device, bufferMemoryA, bufferSize * 2, bufferSize, 0, &data);
+        // memcpy(resultData.data(), data, bufferSize);
+        // vkUnmapMemory(device, bufferMemoryA);
+
         void* data;
-        vkMapMemory(device, bufferMemoryA, bufferSize * 2, bufferSize, 0, &data);
-        memcpy(resultData.data(), data, bufferSize);
-        vkUnmapMemory(device, bufferMemoryA);
+        vkMapMemory(device, bufferMemoryResult, 0, bufferSize, 0, &data);
+        memcpy(resultData.data(), data, bufferSize);   // segfault happens here.
+        vkUnmapMemory(device, bufferMemoryResult);
     }
 
     // Verify the result

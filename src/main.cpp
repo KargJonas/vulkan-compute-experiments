@@ -46,11 +46,11 @@ int main() {
         appInfo.pEngineName = "No Engine";
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.apiVersion = VK_API_VERSION_1_0;
-       
+        
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
-       
+        
         if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create Vulkan instance!");
         }
@@ -61,25 +61,27 @@ int main() {
     {
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-       
+        
         if (deviceCount == 0) {
             throw std::runtime_error("Failed to find GPUs with Vulkan support!");
         }
-       
+        
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-       
-        // this could be a great place to add some type of device picker/overview
-        // alternatively, here you could look into running kernels device-parallel 
-        physicalDevice = devices[0]; // Pick the first device for simplicity
 
+        VkPhysicalDeviceProperties deviceProperties;
         std::cout << "Found these devices:" << std::endl;
 
         for (const VkPhysicalDevice& device : devices) {
-            VkPhysicalDeviceProperties deviceProperties;
             vkGetPhysicalDeviceProperties(device, &deviceProperties);
             std::cout << "  Device Name: " << deviceProperties.deviceName << std::endl;
         }
+
+        // here you could look into running kernels device-parallel
+        // currently just picking the first device for simplicity
+        physicalDevice = devices[0];
+        vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+        std::cout << "Selected the following device: " << deviceProperties.deviceName << std::endl;
     }
 
     // Logical device and queue creation
@@ -90,10 +92,10 @@ int main() {
         // Find a queue family that supports compute operations
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-       
+        
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
-       
+        
         bool found = false;
         for (uint32_t i = 0; i < queueFamilies.size(); i++) {
             if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
@@ -102,57 +104,77 @@ int main() {
                 break;
             }
         }
-        if (!found) {
-            throw std::runtime_error("Failed to find a compute queue family!");
-        }
-       
+        if (!found) throw std::runtime_error("Failed to find a compute queue family!");
+
+        // helps vk decide how to allocate gpu time between multiple queues
+        // each queue can assign a value between 0.0 (lowest priority) and 1.0 (highest)
         float queuePriority = 1.0f;
         VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
-       
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO; // helps identify this struct
+        queueCreateInfo.queueFamilyIndex = queueFamilyIndex; // defines which family this queue should be created in / belongs to
+        queueCreateInfo.queueCount = 1; // sepcifies the number of queues to create in the family
+        queueCreateInfo.pQueuePriorities = &queuePriority; // pointer to an array of priority floats, if queueCount is 1, you can just point to a regular float
+        
         VkDeviceCreateInfo deviceCreateInfo{};
-        deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO; // again, used to identify this struct
+        // if you need to create queues in multiple families, you need multiple queueCreateInfo structs.
+        // in that case you would set this int to the desired number of infos, and pass in a pointer
+        // to an array of create infos in the pQueueCreateInfos field
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-       
+
+        // use the physical device and the deviceCreateInfo (that also contains the queueCreateInfos) to
+        // create a logical device. a reference to device will be stored in `device`
         if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create logical device!");
         }
-       
-        vkGetDeviceQueue(device, queueFamilyIndex, 0, &computeQueue);
+
+        // get a reference to the created queue.
+        // (for this we need to specify the index of the family the queue belongs to, aswell as
+        // the index of the queue in that family)
+        uint32_t queueIndex = 0;
+        vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, &computeQueue);
     }
 
     // Create buffers
     VkBuffer bufferA, bufferB, bufferResult;
     VkDeviceMemory bufferMemoryA, bufferMemoryB, bufferMemoryResult;
     {
+        // we can reuse the bufferinfo for all three buffers because they have the same size.
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = bufferSize;
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-       
+        
+        // according to chatgpt, vk does not retain any references to the VkBufferCreateInfo
+        // struct after buffer creation, so in the case that the buffers are not of the same
+        // size, we could reuse the same bufferInfo struct and just change the value of the
+        // size fields in between the vkCreateBuffer calls.
+
+        // the third param is a VkAllocationCallbacks* struct and allows you to control
+        // the way memory allocation is done. mem alloc is off the critical path, thus
+        // using non-default mem alloc is usually not used for perf reason, but more for
+        // debugging.
         // Buffer A
         vkCreateBuffer(device, &bufferInfo, nullptr, &bufferA);
         // Buffer B
         vkCreateBuffer(device, &bufferInfo, nullptr, &bufferB);
         // Result Buffer
         vkCreateBuffer(device, &bufferInfo, nullptr, &bufferResult);
-       
+        
         // Memory allocation
+        // holds device specific mem requirement info like size, alignment and memory type
         VkMemoryRequirements memRequirements;
         vkGetBufferMemoryRequirements(device, bufferA, &memRequirements);
-       
+        
         VkMemoryAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocInfo.allocationSize = memRequirements.size * 3; // For three buffers
-       
+        
         // Find memory type
         VkPhysicalDeviceMemoryProperties memProperties;
         vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-       
+        
         uint32_t memoryTypeIndex = 0;
         bool found = false;
         for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
@@ -168,7 +190,7 @@ int main() {
             throw std::runtime_error("Failed to find suitable memory type!");
         }
         allocInfo.memoryTypeIndex = memoryTypeIndex;
-       
+        
         // Allocate memory for buffers
         vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemoryA);
         vkBindBufferMemory(device, bufferA, bufferMemoryA, 0);

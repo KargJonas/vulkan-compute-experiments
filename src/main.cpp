@@ -4,7 +4,6 @@
 #include <fstream>
 #include <stdexcept>
 #include <cstdlib>
-#include <math.h>
 
 
 #include "./util.h"
@@ -28,250 +27,77 @@
 // 15. reverse buffer transfer
 // 16. cleanup
 
+/**
+ * Todo: introduce a Kernel struct and std::vector<Kernel> kernels;
+ * the struct will hold all objects/configuration relevant to one kernel.
+ * at teardown we can iterate over all kernels to free memory.
+ */
+
+
 int main() {
     // number of elements in array
-    const int dataSize = 8;
+    // const int dataSize = 800000000;
+    const int nelem = 8;
 
     // total size of array
-    const size_t bufferSize = sizeof(float) * dataSize;
+    const size_t bufferSize = sizeof(float) * nelem;
 
     // input arrays, filled with data
-    std::vector<float> dataA(dataSize, 1.0f); // Initialize with 1.0
-    std::vector<float> dataB(dataSize, 2.0f); // Initialize with 2.0
+    std::vector<float> dataA(nelem, 1.0f); // Initialize with 1.0
+    std::vector<float> dataB(nelem, 2.0f); // Initialize with 2.0
 
-    // Vulkan instance creation
-    VkInstance instance = createInstance();
-    VkPhysicalDevice physicalDevice = selectPhysicalDevice(instance);
+    VkInstance instance = createInstance(); // create vk instance
+    VkPhysicalDevice physicalDevice = selectPhysicalDevice(instance); // select physical device
+    uint32_t queueFamilyIndex = findComputeQueueFamily(physicalDevice); // get index of the compute queue family
+    uint32_t queueIndex = 0;
+    VkDevice device = createDevice(physicalDevice, queueFamilyIndex);
 
-    // Logical device and queue creation
-    uint32_t queueFamilyIndex = findComputeQueueFamily(physicalDevice);
-    
-    VkDevice device;   // global
-    VkQueue computeQueue;
-    {
-        // helps vk decide how to allocate gpu time between multiple queues
-        // each queue can assign a value between 0.0 (lowest priority) and 1.0 (highest)
-        float queuePriority = 1.0f;
-        VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO; // helps identify this struct
-        queueCreateInfo.queueFamilyIndex = queueFamilyIndex; // defines which family this queue should be created in / belongs to
-        queueCreateInfo.queueCount = 1; // sepcifies the number of queues to create in the family
-        queueCreateInfo.pQueuePriorities = &queuePriority; // pointer to an array of priority floats, if queueCount is 1, you can just point to a regular float
-        
-        // todo:
-        // sadly, you cannot create queues after device creation.
-        // so when you create the device, the queues have to be set in stone-
-        // this makes this block slightly more difficult to split up
-
-        VkDeviceCreateInfo deviceCreateInfo{};
-        deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO; // again, used to identify this struct
-        // if you need to create queues in multiple families, you need multiple queueCreateInfo structs.
-        // in that case you would set this int to the desired number of infos, and pass in a pointer
-        // to an array of create infos in the pQueueCreateInfos field
-        deviceCreateInfo.queueCreateInfoCount = 1;
-        deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-
-        // use the physical device and the deviceCreateInfo (that also contains the queueCreateInfos) to
-        // create a logical device. a reference to device will be stored in `device`
-        if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create logical device!");
-        }
-
-        // get a reference to the created queue.
-        // (for this we need to specify the index of the family the queue belongs to, aswell as
-        // the index of the queue in that family)
-        uint32_t queueIndex = 0;
-        vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, &computeQueue);
-    }
-
-    // Create buffers and transfer data to them from the cpu
+    // Allocate memory on the GPU
     VkBuffer bufferA, bufferB, bufferResult;
     VkDeviceMemory bufferMemoryA, bufferMemoryB, bufferMemoryResult;
     std::vector<ExtendedVkDescriptorBufferInfo> bufferDescriptors;
-    {
-        createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize, 0);
-        createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize, 1);
-        createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize, 2);
+    createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize, 0);
+    createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize, 1);
+    createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize, 2);
 
-        copyBufferToDevice(device, bufferMemoryA, dataA.data(), 0, bufferSize);
-        copyBufferToDevice(device, bufferMemoryB, dataB.data(), 0, bufferSize);
-    }
+    // Transfer data from CPU to GPU
+    copyBufferToDevice(device, bufferMemoryA, dataA.data(), 0, bufferSize);
+    copyBufferToDevice(device, bufferMemoryB, dataB.data(), 0, bufferSize);
 
     // Descriptor set layout
-    VkDescriptorSetLayout descriptorSetLayout;
-    {
-        size_t descriptorCount = bufferDescriptors.size();
+    VkDescriptorSetLayout descriptorSetLayout = createDescriptorSetLayout(device, bufferDescriptors);
 
-        VkDescriptorSetLayoutBinding bindings[descriptorCount]{};
-
-        for (int i = 0; i < descriptorCount; i++) {
-            bindings[i].binding = bufferDescriptors[i].binding;
-            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            bindings[i].descriptorCount = 1;
-            bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        }
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = descriptorCount;
-        layoutInfo.pBindings = bindings;
-
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create descriptor set layout!");
-        }
-    }
-
-    // Pipeline layout
-    VkPipelineLayout pipelineLayout;
-    {
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create pipeline layout!");
-        }
-    }
-
-    // Shader module
-    VkShaderModule computeShaderModule;
-    {
-        auto shaderCode = readFile("shaders/add.spv");
-
-        VkShaderModuleCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        createInfo.codeSize = shaderCode.size();
-        createInfo.pCode = reinterpret_cast<const uint32_t*>(shaderCode.data());
-
-        if (vkCreateShaderModule(device, &createInfo, nullptr, &computeShaderModule) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create shader module!");
-        }
-    }
+    // Pipeline creation (each operation will have it's own pipeline)
+    std::vector<char> shaderCode = readFile("shaders/add.spv");
+    VkPipelineLayout pipelineLayout = createPipelineLayout(device, descriptorSetLayout);
+    VkShaderModule computeShaderModule = createShaderModule(device, shaderCode);
 
     // Compute pipeline
-    VkPipeline computePipeline;
-    {
-        VkComputePipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        pipelineInfo.stage.module = computeShaderModule;
-        pipelineInfo.stage.pName = "main";
-        pipelineInfo.layout = pipelineLayout;
-
-        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create compute pipeline!");
-        }
-    }
+    VkPipeline computePipeline = createPipeline(device, pipelineLayout, computeShaderModule, "main");
 
     // Descriptor pool and descriptor sets
-    VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
-    {
-        size_t descriptorCount = bufferDescriptors.size();
-
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = descriptorCount;
-
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-        poolInfo.maxSets = 1;
-
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create descriptor pool!");
-        }
-
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &descriptorSetLayout;
-
-        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate descriptor set!");
-        }
-
-        VkWriteDescriptorSet descriptorWrites[descriptorCount]{};
-        for (int i = 0; i < descriptorCount; i++) {
-            descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[i].dstSet = descriptorSet;
-            descriptorWrites[i].dstBinding = bufferDescriptors[i].binding;
-            descriptorWrites[i].dstArrayElement = 0;
-            descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            descriptorWrites[i].descriptorCount = 1;
-            descriptorWrites[i].pBufferInfo = &bufferDescriptors[i];
-        }
-
-        vkUpdateDescriptorSets(device, descriptorCount, descriptorWrites, 0, nullptr);
-    }
+    VkDescriptorPool descriptorPool = createDescriptorPool(device, bufferDescriptors);
+    VkDescriptorSet descriptorSet = createDescriptorSet(device, descriptorPool, descriptorSetLayout, bufferDescriptors);
 
     // Command buffer
-    VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer;
-    {
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.queueFamilyIndex = queueFamilyIndex;
+    VkCommandPool commandPool = createCommandPool(device, queueFamilyIndex);
+    VkCommandBuffer commandBuffer = createCommandBuffer(device, commandPool);
 
-        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create command pool!");
-        }
+    VkQueue queue = getQueue(device, queueFamilyIndex, queueIndex);
 
-        VkCommandBufferAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = commandPool;
-        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = 1;
-
-        if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate command buffer!");
-        }
-    }
-
-    // Record command buffer
-    {
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-
-        vkCmdDispatch(commandBuffer, (uint32_t)ceil(dataSize / 256.0), 1, 1);
-
-        vkEndCommandBuffer(commandBuffer);
-    }
-
-    // Execute command buffer
-    {
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-
-        VkFence fence;
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vkCreateFence(device, &fenceInfo, nullptr, &fence);
-
-        vkQueueSubmit(computeQueue, 1, &submitInfo, fence);
-        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-
-        vkDestroyFence(device, fence, nullptr);
-    }
+    uint32_t groupSizeX = (uint32_t)ceil(nelem / 256.0);
+    uint32_t groupSizeY = 1;
+    uint32_t groupSizeZ = 1;
+    recordCommandBuffer(commandBuffer, computePipeline, pipelineLayout, descriptorSet, groupSizeX, groupSizeY, groupSizeZ);
+    executeCommandBuffer(device, commandBuffer, queue);
 
     // Read back the result
-    std::vector<float> resultData(dataSize);
+    std::vector<float> resultData(nelem);
     copyBufferFromDevice(device, bufferMemoryResult, resultData.data(), 0, bufferSize);
 
     // Verify the result
     bool success = true;
-    for (int i = 0; i < dataSize; i++) {
+    for (int i = 0; i < nelem; i++) {
         std::cout << resultData[i] << "  ";
 
         if (resultData[i] != dataA[i] + dataB[i]) {

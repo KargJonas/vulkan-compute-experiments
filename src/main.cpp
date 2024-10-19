@@ -3,97 +3,34 @@
 #include <vector>
 #include <fstream>
 #include <stdexcept>
-#include <cstring>
 #include <cstdlib>
 #include <math.h>
 
-struct ExtendedVkDescriptorBufferInfo : public VkDescriptorBufferInfo {
-    uint32_t binding;
-};
 
-// Function to read the SPIR-V shader code from a file
-std::vector<char> readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-   
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed to open shader file!");
-    }
-   
-    size_t fileSize = (size_t) file.tellg();
-    std::vector<char> buffer(fileSize);
-   
-    file.seekg(0);
-    file.read(buffer.data(), fileSize);
-   
-    file.close();
-    return buffer;
-}
+#include "./util.h"
 
-void copyBufferToDevice(VkDevice destDevice, VkDeviceMemory destDeviceMemory, void* srcBuffer, VkDeviceSize offset, VkDeviceSize bufferSize) {
-    void* data;
-    vkMapMemory(destDevice, destDeviceMemory, offset, bufferSize, 0, &data);
-    memcpy(data, srcBuffer, bufferSize);
-    vkUnmapMemory(destDevice, destDeviceMemory);
-}
 
-// Creates a buffer on a physical device, allocates memory and binds the buffer
-void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDeviceMemory* deviceMemory, std::vector<ExtendedVkDescriptorBufferInfo>* bufferDescriptors, VkBuffer* buffer, VkDeviceSize size, uint32_t binding) {
-    
-    // This struct is used to hold the information required for buffer creation
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = size;
-    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-    // Third param can be used for controlling allocation
-    // Could be used for debugging purposes
-    vkCreateBuffer(logicalDevice, &bufferInfo, nullptr, buffer);
-
-    // Get device specific memory requirements info like size, alignment and memory type
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(logicalDevice, *buffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    
-    // Describes a number of memory heaps and memory types of the physical device that can be accessed
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-    // Searches through the availably memory types provided by the physical device
-    // to find one that satisfies both the buffer's memory requirements and the desired
-    // properties for CPU access.
-    uint32_t memoryTypeIndex = 0;
-    bool found = false;
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((memRequirements.memoryTypeBits & (1 << i)) &&
-            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memoryTypeIndex = i;
-            found = true;
-            break;
-        }
-    }
-
-    if (!found) throw std::runtime_error("Failed to find suitable memory type!");
-    allocInfo.memoryTypeIndex = memoryTypeIndex;
-
-    // Allocate and bind
-    vkAllocateMemory(logicalDevice, &allocInfo, nullptr, deviceMemory);
-    vkBindBufferMemory(logicalDevice, *buffer, *deviceMemory, 0);
-
-    ExtendedVkDescriptorBufferInfo bufferDescriptorInfo{};
-    bufferDescriptorInfo.buffer = *buffer;
-    bufferDescriptorInfo.offset = 0;
-    bufferDescriptorInfo.range = size;
-    bufferDescriptorInfo.binding = binding;
-    bufferDescriptors->push_back(bufferDescriptorInfo);
-}
+// these are the steps we need to take in order to execute a compute shader
+// 1. cpu buffer creation
+// 2. vk instance creation
+// 3. physical device selection
+// 4. logical device/queue creation
+// 5. buffer creation
+// 6. buffer transfer
+// 7. descriptor set layout definitions
+// 8. pipeline layout definition
+// 9. shader code loading / shader module creation
+// 10. compute pipeline creation
+// 11. descriptor pool creation
+// 12. command buffer creation
+// 13. command buffer filling ("recording")
+// 14. command buffer execution
+// 15. reverse buffer transfer
+// 16. cleanup
 
 int main() {
     // number of elements in array
-    const int dataSize = 1024;
+    const int dataSize = 8;
 
     // total size of array
     const size_t bufferSize = sizeof(float) * dataSize;
@@ -103,75 +40,15 @@ int main() {
     std::vector<float> dataB(dataSize, 2.0f); // Initialize with 2.0
 
     // Vulkan instance creation
-    VkInstance instance;
-    {
-        VkApplicationInfo appInfo{};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "Compute Shader Demo";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "No Engine";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
-        
-        VkInstanceCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
-        
-        if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create Vulkan instance!");
-        }
-    }
-
-    // Physical device selection
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;  // global
-    {
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-        
-        if (deviceCount == 0) {
-            throw std::runtime_error("Failed to find GPUs with Vulkan support!");
-        }
-        
-        std::vector<VkPhysicalDevice> devices(deviceCount);
-        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-        VkPhysicalDeviceProperties deviceProperties;
-        std::cout << "Found these devices:" << std::endl;
-
-        for (const VkPhysicalDevice& device : devices) {
-            vkGetPhysicalDeviceProperties(device, &deviceProperties);
-            std::cout << "  Device Name: " << deviceProperties.deviceName << std::endl;
-        }
-
-        // here you could look into running kernels device-parallel
-        // currently just picking the first device for simplicity
-        physicalDevice = devices[0];
-        vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
-        std::cout << "Selected the following device: " << deviceProperties.deviceName << std::endl;
-    }
+    VkInstance instance = createInstance();
+    VkPhysicalDevice physicalDevice = selectPhysicalDevice(instance);
 
     // Logical device and queue creation
+    uint32_t queueFamilyIndex = findComputeQueueFamily(physicalDevice);
+    
     VkDevice device;   // global
     VkQueue computeQueue;
-    uint32_t queueFamilyIndex;
     {
-        // Find a queue family that supports compute operations
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-        
-        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
-        
-        bool found = false;
-        for (uint32_t i = 0; i < queueFamilies.size(); i++) {
-            if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                queueFamilyIndex = i;
-                found = true;
-                break;
-            }
-        }
-        if (!found) throw std::runtime_error("Failed to find a compute queue family!");
-
         // helps vk decide how to allocate gpu time between multiple queues
         // each queue can assign a value between 0.0 (lowest priority) and 1.0 (highest)
         float queuePriority = 1.0f;
@@ -181,6 +58,11 @@ int main() {
         queueCreateInfo.queueCount = 1; // sepcifies the number of queues to create in the family
         queueCreateInfo.pQueuePriorities = &queuePriority; // pointer to an array of priority floats, if queueCount is 1, you can just point to a regular float
         
+        // todo:
+        // sadly, you cannot create queues after device creation.
+        // so when you create the device, the queues have to be set in stone-
+        // this makes this block slightly more difficult to split up
+
         VkDeviceCreateInfo deviceCreateInfo{};
         deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO; // again, used to identify this struct
         // if you need to create queues in multiple families, you need multiple queueCreateInfo structs.
@@ -202,7 +84,7 @@ int main() {
         vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, &computeQueue);
     }
 
-    // Create buffers
+    // Create buffers and transfer data to them from the cpu
     VkBuffer bufferA, bufferB, bufferResult;
     VkDeviceMemory bufferMemoryA, bufferMemoryB, bufferMemoryResult;
     std::vector<ExtendedVkDescriptorBufferInfo> bufferDescriptors;
@@ -210,10 +92,7 @@ int main() {
         createBuffer(physicalDevice, device, &bufferMemoryA, &bufferDescriptors, &bufferA, bufferSize, 0);
         createBuffer(physicalDevice, device, &bufferMemoryB, &bufferDescriptors, &bufferB, bufferSize, 1);
         createBuffer(physicalDevice, device, &bufferMemoryResult, &bufferDescriptors, &bufferResult, bufferSize, 2);
-    }
 
-    // Map and copy data to buffers
-    {
         copyBufferToDevice(device, bufferMemoryA, dataA.data(), 0, bufferSize);
         copyBufferToDevice(device, bufferMemoryB, dataB.data(), 0, bufferSize);
     }
@@ -388,35 +267,40 @@ int main() {
 
     // Read back the result
     std::vector<float> resultData(dataSize);
-    {
-        void* data;
-        vkMapMemory(device, bufferMemoryResult, 0, bufferSize, 0, &data);
-        memcpy(resultData.data(), data, bufferSize);   // segfault happens here.
-        vkUnmapMemory(device, bufferMemoryResult);
-    }
+    copyBufferFromDevice(device, bufferMemoryResult, resultData.data(), 0, bufferSize);
 
     // Verify the result
     bool success = true;
     for (int i = 0; i < dataSize; i++) {
+        std::cout << resultData[i] << "  ";
+
         if (resultData[i] != dataA[i] + dataB[i]) {
             success = false;
             break;
         }
     }
 
-    if (success) {
-        std::cout << "Success: The computation result is correct." << std::endl;
-    } else {
-        std::cout << "Error: The computation result is incorrect." << std::endl;
-    }
+    std::cout << std::endl;
 
-    // Cleanup
+    if (success) std::cout << "Success: The computation result is correct." << std::endl;
+    else std::cout << "Error: The computation result is incorrect." << std::endl;
+
+    // TODO: introduce central descriptor registry that can later be used for tear down
+    //   also, this is likely better than extending the VkDescriptorBufferInfo struct with the binding info
+
+    // Buffer Cleanup
     vkDestroyBuffer(device, bufferA, nullptr);
     vkDestroyBuffer(device, bufferB, nullptr);
     vkDestroyBuffer(device, bufferResult, nullptr);
     vkFreeMemory(device, bufferMemoryA, nullptr);
+    vkFreeMemory(device, bufferMemoryB, nullptr);
+    vkFreeMemory(device, bufferMemoryResult, nullptr);
+
+    // Descriptor Cleanup
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+
+    // MISC
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
     vkDestroyShaderModule(device, computeShaderModule, nullptr);

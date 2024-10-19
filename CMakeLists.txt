@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 14)
 
 find_package(Vulkan REQUIRED)
 
-add_executable(ComputeShaderDemo src/main.cpp)
+add_executable(ComputeShaderDemo src/main.cpp src/util.cpp)
 
 target_link_libraries(ComputeShaderDemo Vulkan::Vulkan)
 

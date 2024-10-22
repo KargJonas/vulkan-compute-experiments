@@ -134,9 +134,11 @@ VkQueue getQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex
     return computeQueue;
 }
 
-// Creates a buffer on a physical device, allocates memory and binds the buffer
-void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDeviceMemory* deviceMemory, std::vector<ExtendedVkDescriptorBufferInfo>* bufferDescriptors, VkBuffer* buffer, VkDeviceSize size, uint32_t binding) {
-    
+// Creates a buffer on a physical device, allocates memory, and binds the buffer
+Buffer createBuffer( VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, uint32_t binding) {    
+    VkBuffer buffer;
+    VkDeviceMemory deviceMemory;
+
     // This struct is used to hold the information required for buffer creation
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -145,21 +147,21 @@ void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDev
 
     // Third param can be used for controlling allocation
     // Could be used for debugging purposes
-    vkCreateBuffer(logicalDevice, &bufferInfo, nullptr, buffer);
+    vkCreateBuffer(device, &bufferInfo, nullptr, &buffer);
 
-    // Get device specific memory requirements info like size, alignment and memory type
+    // Get device-specific memory requirements info like size, alignment, and memory type
     VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(logicalDevice, *buffer, &memRequirements);
+    vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    
+
     // Describes a number of memory heaps and memory types of the physical device that can be accessed
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
 
-    // Searches through the availably memory types provided by the physical device
+    // Searches through the available memory types provided by the physical device
     // to find one that satisfies both the buffer's memory requirements and the desired
     // properties for CPU access.
     uint32_t memoryTypeIndex = 0;
@@ -178,19 +180,27 @@ void createBuffer(VkPhysicalDevice physicalDevice, VkDevice logicalDevice, VkDev
     allocInfo.memoryTypeIndex = memoryTypeIndex;
 
     // Allocate and bind
-    vkAllocateMemory(logicalDevice, &allocInfo, nullptr, deviceMemory);
-    vkBindBufferMemory(logicalDevice, *buffer, *deviceMemory, 0);
+    vkAllocateMemory(device, &allocInfo, nullptr, &deviceMemory);
+    vkBindBufferMemory(device, buffer, deviceMemory, 0);
 
-    ExtendedVkDescriptorBufferInfo bufferDescriptorInfo{};
-    bufferDescriptorInfo.buffer = *buffer;
+    VkDescriptorBufferInfo bufferDescriptorInfo{};
+    bufferDescriptorInfo.buffer = buffer;
     bufferDescriptorInfo.offset = 0;
     bufferDescriptorInfo.range = size;
-    bufferDescriptorInfo.binding = binding;
-    bufferDescriptors->push_back(bufferDescriptorInfo);
+
+    Buffer b;
+    b.buffer = buffer;
+    b.deviceMemory = deviceMemory;
+    b.descriptorInfo = bufferDescriptorInfo;
+    b.device = device;
+    b.size = size;
+    b.binding = binding;
+
+    return b;
 }
 
 // Copies data from CPU memory to VRAM
-void copyBufferToDevice(VkDevice destDevice, VkDeviceMemory destDeviceMemory, void* srcBuffer, VkDeviceSize offset, VkDeviceSize bufferSize) {
+void copyToBuffer(VkDevice destDevice, VkDeviceMemory destDeviceMemory, void* srcBuffer, VkDeviceSize offset, VkDeviceSize bufferSize) {
     void* data;
     vkMapMemory(destDevice, destDeviceMemory, offset, bufferSize, 0, &data);
     memcpy(data, srcBuffer, bufferSize);
@@ -238,8 +248,8 @@ VkPipeline createPipeline(VkDevice device, VkPipelineLayout pipelineLayout, VkSh
     return computePipeline;
 }
 
-VkDescriptorPool createDescriptorPool(VkDevice device, std::vector<ExtendedVkDescriptorBufferInfo>& bufferDescriptors) {
-    size_t descriptorCount = bufferDescriptors.size();
+VkDescriptorPool createDescriptorPool(VkDevice device, std::vector<Buffer>& buffers) {
+    size_t descriptorCount = buffers.size();
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -259,8 +269,8 @@ VkDescriptorPool createDescriptorPool(VkDevice device, std::vector<ExtendedVkDes
     return descriptorPool;
 }
 
-VkDescriptorSet createDescriptorSet(VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorSetLayout descriptorSetLayout, std::vector<ExtendedVkDescriptorBufferInfo>& bufferDescriptors) {
-    size_t descriptorCount = bufferDescriptors.size();
+VkDescriptorSet createDescriptorSet(VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorSetLayout descriptorSetLayout, std::vector<Buffer>& buffers) {
+    size_t descriptorCount = buffers.size();
 
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -279,11 +289,11 @@ VkDescriptorSet createDescriptorSet(VkDevice device, VkDescriptorPool descriptor
     for (int i = 0; i < descriptorCount; i++) {
         descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrites[i].dstSet = descriptorSet;
-        descriptorWrites[i].dstBinding = bufferDescriptors[i].binding;
+        descriptorWrites[i].dstBinding = buffers[i].binding;
         descriptorWrites[i].dstArrayElement = 0;
         descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         descriptorWrites[i].descriptorCount = 1;
-        descriptorWrites[i].pBufferInfo = &bufferDescriptors[i];
+        descriptorWrites[i].pBufferInfo = &buffers[i].descriptorInfo;
     }
 
     vkUpdateDescriptorSets(device, descriptorCount, descriptorWrites.data(), 0, nullptr);
@@ -335,12 +345,12 @@ VkCommandBuffer createCommandBuffer(VkDevice device, VkCommandPool commandPool) 
     return commandBuffer;
 }
 
-VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device, std::vector<ExtendedVkDescriptorBufferInfo>& bufferDescriptors) {
-    size_t descriptorCount = bufferDescriptors.size();
+VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device, std::vector<Buffer>& buffers) {
+    size_t descriptorCount = buffers.size();
     std::vector<VkDescriptorSetLayoutBinding> bindings(descriptorCount);
 
     for (int i = 0; i < descriptorCount; i++) {
-        bindings[i].binding = bufferDescriptors[i].binding;
+        bindings[i].binding = buffers[i].binding;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -388,4 +398,11 @@ void executeCommandBuffer(VkDevice device, VkCommandBuffer commandBuffer, VkQueu
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     vkDestroyFence(device, fence, nullptr);
+}
+
+void destroyBuffers(std::vector<Buffer>& buffers) {
+    for (Buffer buffer : buffers) {
+        vkDestroyBuffer(buffer.device, buffer.buffer, nullptr);
+        vkFreeMemory(buffer.device, buffer.deviceMemory, nullptr);
+    }
 }

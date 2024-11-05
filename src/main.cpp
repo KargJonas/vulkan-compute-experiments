@@ -39,11 +39,13 @@
 int main() {
     // Number of elements in each buffer
     const int nelem = 8;
-    const size_t bufferSize = sizeof(float) * nelem;
 
-    // input arrays, filled with data
-    std::vector<float> dataA(nelem, 1.0f); // Initialize with 1.0
-    std::vector<float> dataB(nelem, 2.0f); // Initialize with 2.0
+    // Buffer types will be passed in from the frontend using string based type names for simplicity
+    const size_t bufferSize = getTypeSize("float") * nelem;
+
+    // Input data for demo purposes
+    std::vector<float> dataA = {1, 2, 3, 4, 5, 6, 7, 8};
+    std::vector<float> dataB = {3, 1, 4, 1, 5, 9, 2, 6};
 
     VkInstance instance = createInstance(); // Create vk instance
     VkPhysicalDevice physicalDevice = selectPhysicalDevice(instance); // Select physical device

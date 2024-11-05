@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <map>
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -22,6 +23,7 @@ struct Buffer {
     uint32_t binding;
 };
 
+size_t getTypeSize(std::string type);
 std::vector<char> readFile(const std::string& filename);
 VkInstance createInstance();
 VkPhysicalDevice selectPhysicalDevice(VkInstance &instance);

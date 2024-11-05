@@ -1,5 +1,17 @@
 #include "./util.h"
 
+std::map<std::string, unsigned long> typeMap = {
+    {"int", sizeof(int)},
+    {"uint", sizeof(unsigned int)},
+    {"float", sizeof(float)},
+};
+
+size_t getTypeSize(std::string type) {
+    auto it = typeMap.find(type);
+    if (it == typeMap.end()) throw std::runtime_error("Unsupported type.");
+    return static_cast<size_t>(it->second);
+}
+
 // Function to read the SPIR-V shader code from a file
 std::vector<char> readFile(const std::string& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
